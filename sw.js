@@ -1,6 +1,6 @@
 // Offline shell for the home-screen app. Serve from cache instantly, refresh the cache in
 // the background, so a new deploy shows up on the next launch.
-const CACHE = 'scope-art-v2';
+const CACHE = 'scope-art-v3';
 const SHELL = ['./', 'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

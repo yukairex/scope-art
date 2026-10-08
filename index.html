@@ -94,6 +94,11 @@
   label.sl { display: grid; grid-template-columns: 64px 1fr 44px; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
   label.sl output { text-align: right; color: var(--muted); font: 12px ui-monospace, Menlo, monospace; }
   label.sl.hide { display: none; }
+  .checks { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  label.chk { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+  label.chk.hide { display: none; }
+  label.chk small { color: var(--muted); font-size: 11.5px; }
+  label.chk input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .swatches { display: flex; gap: 8px; margin-top: 12px; }
   .sw { all: unset; width: 26px; height: 26px; border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px transparent; }
@@ -166,6 +171,10 @@
         <button data-mode="yt" title="普通波形">波形</button>
       </div>
       <label class="sl hide" id="delayRow"><span>延迟</span><input type="range" id="delay" min="1" max="400" step="1" value="24"><output></output></label>
+      <div class="checks">
+        <label class="chk"><input type="checkbox" id="autoGain"> 自动增益<small>（小声也画满屏）</small></label>
+        <label class="chk hide" id="autoDelayRow"><input type="checkbox" id="autoDelay" checked> 自动延迟<small>（跟随音高，长音画成圆环）</small></label>
+      </div>
       <label class="sl hide" id="tbRow"><span>时基</span><input type="range" id="timebase" min="128" max="8192" step="64" value="1024"><output></output></label>
       <label class="sl"><span>增益</span><input type="range" id="gain" min="0.2" max="6" step="0.05" value="1"><output></output></label>
       <label class="sl"><span>亮度</span><input type="range" id="bright" min="0.2" max="4" step="0.05" value="1.2"><output></output></label>
@@ -273,6 +282,7 @@ function stopCurrent() {
 
 async function playBuffer(buf, kind) {
   setAudioSession('playback');
+  $('#autoGain').checked = false;
   await ensureAudio(); stopCurrent();
   const src = ac.createBufferSource(); src.buffer = buf; src.loop = true;
   src.connect(bus); src.connect(master); src.start();
@@ -449,6 +459,7 @@ $('#micStart').onclick = async () => {
     if (IOS) await rebuildAudio();
     await ensureAudio(); stopCurrent();
     const src = ac.createMediaStreamSource(stream); src.connect(bus);
+    $('#autoGain').checked = true;
     current = { kind: 'mic', stop: () => { src.disconnect(); stream.getTracks().forEach((t) => t.stop()); } };
     $('#micStart').style.display = 'none'; $('#micStop').style.display = '';
     $('#hint').classList.add('gone');
@@ -511,6 +522,7 @@ function setMode(m) {
   mode = m;
   document.querySelectorAll('#modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
   $('#delayRow').classList.toggle('hide', m !== 'phase');
+  $('#autoDelayRow').classList.toggle('hide', m !== 'phase');
   $('#tbRow').classList.toggle('hide', m !== 'yt');
   lastPt = null;
 }
@@ -519,6 +531,7 @@ $('#modes').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.m
 const S = {};
 const fmt = { delay: (v) => v, timebase: (v) => v, gain: (v) => (+v).toFixed(1) + '×', bright: (v) => (+v).toFixed(1),
   persist: (v) => Math.round(v * 100) + '%', width: (v) => (+v).toFixed(1), vol: (v) => Math.round(v * 100) };
+$('#delay').addEventListener('input', () => { $('#autoDelay').checked = false; });
 for (const id of Object.keys(fmt)) {
   const el = $('#' + id), out = id === 'vol' ? $('#volOut') : el.nextElementSibling;
   const upd = () => { S[id] = +el.value; out.textContent = fmt[id](el.value); if (id === 'vol' && master) master.gain.setTargetAtTime(S.vol, ac.currentTime, 0.02); };
@@ -617,7 +630,7 @@ function drawYT() {
   }
   const paths = [new Path2D()], p = paths[0];
   for (let i = 0; i < N; i++) {
-    const x = (i / (N - 1)) * W, y = H / 2 - hist[(start + i) & histMask] * S.gain * R;
+    const x = (i / (N - 1)) * W, y = H / 2 - hist[(start + i) & histMask] * S.gain * agcShown * R;
     i ? p.lineTo(x, y) : p.moveTo(x, y);
   }
   const all = []; all[Math.min(NB - 1, Math.round(S.bright * 5))] = p;
@@ -627,6 +640,32 @@ function drawYT() {
 let frames = 0, lastT = performance.now(), fps = 0, xsBuf = new Float32Array(16384), ysBuf = new Float32Array(16384);
 const tmpL = new Float32Array(8192), tmpR = new Float32Array(8192);
 let peak = 0;
+
+// Display-only automatic gain: scale the picture by a slow envelope of the input level.
+let env = 0, agcShown = 1;
+// Pitch → delay for phase mode: a delay of ¼ period turns a steady tone into a circle.
+// Autocorrelation over the recent history, run a few times a second.
+function trackDelay() {
+  const N = 1024, minLag = Math.round(ac.sampleRate / 1200), maxLag = Math.min(800, Math.round(ac.sampleRate / 60));
+  const base = (hi - N - maxLag) & histMask;
+  let e0 = 0;
+  for (let i = 0; i < N; i++) { const v = hist[(base + i) & histMask]; e0 += v * v; }
+  if (e0 < 1e-7 * N) return;
+  let best = 0, bestLag = 0, prev = 1, rising = false;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let acc = 0;
+    for (let i = 0; i < N; i++) acc += hist[(base + i) & histMask] * hist[(base + i + lag) & histMask];
+    const r = acc / e0;
+    if (r > prev) rising = true;              // skip the zero-lag lobe, look for the first real peak
+    if (rising && r > best) { best = r; bestLag = lag; }
+    if (rising && best > 0.6 && r < best * 0.8) break;
+    prev = r;
+  }
+  if (best < 0.45 || !bestLag) return;        // unvoiced / noisy: keep the last delay
+  const target = Math.max(1, Math.min(400, Math.round(bestLag / 4)));
+  const d = Math.round(S.delay + (target - S.delay) * 0.5);
+  if (d !== S.delay) { S.delay = d; $('#delay').value = d; $('#delay').nextElementSibling.textContent = d; }
+}
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -653,7 +692,14 @@ function frame(now) {
     chunks = [{ l: tmpL.subarray(8192 - want), r: tmpR.subarray(8192 - want) }];
   }
   let n = 0, sum = 0;
-  const gain = S.gain, d = S.delay;
+  let maxAbs = 0;
+  for (const { l, r } of chunks) for (let i = 0; i < l.length; i++) {
+    const a = Math.abs(l[i]), b = Math.abs(r[i]); if (a > maxAbs) maxAbs = a; if (b > maxAbs) maxAbs = b;
+  }
+  env = Math.max(maxAbs, env * Math.pow(0.5, dt / 0.8));          // fast attack, ~0.8 s half-life release
+  const agc = $('#autoGain').checked ? Math.min(60, 0.8 / Math.max(env, 0.003)) : 1;
+  agcShown = agc;
+  const gain = S.gain * agc, d = S.delay;
   for (const { l, r } of chunks) {
     for (let i = 0; i < l.length && n < xsBuf.length; i++) {
       const L = l[i], Rr = r[i], m = (L + Rr) * 0.5;
@@ -665,6 +711,7 @@ function frame(now) {
       n++;
     }
   }
+  if (n && mode === 'phase' && $('#autoDelay').checked && frames % 8 === 0) trackDelay();
   if (n) {
     const rms = Math.sqrt(sum / n);
     peak = Math.max(rms, peak * 0.9);
@@ -672,7 +719,7 @@ function frame(now) {
   } else peak *= 0.9;
   $('#meter').style.width = Math.min(100, peak * 180) + '%';
   if (frames % 15 === 0) {
-    $('#hud').textContent = `${(ac.sampleRate / 1000).toFixed(1)} kHz · ${n} 点/帧 · ${fps.toFixed(0)} fps · ${useWorklet ? 'worklet' : 'analyser'} · ${mode.toUpperCase()}`;
+    $('#hud').textContent = `${(ac.sampleRate / 1000).toFixed(1)} kHz · ${n} 点/帧 · ${fps.toFixed(0)} fps · ${useWorklet ? 'worklet' : 'analyser'} · ${mode.toUpperCase()}${$('#autoGain').checked ? ` · 自动增益 ×${agcShown.toFixed(1)}` : ''}${mode === 'phase' ? ` · 延迟 ${S.delay}` : ''}`;
   }
 }
 requestAnimationFrame(frame);
