@@ -223,9 +223,14 @@ function setAudioSession(kind) {
   silentEl.play().catch(() => {});
 }
 
+// iOS adds an "interrupted" state (mic start, calls, Siri, audio-session changes); treat it
+// like "suspended" and keep asking to resume, or the scope silently stops drawing.
+function wantResume() { return ac && ac.state !== 'running' && ac.state !== 'closed' && !userPaused; }
+
 async function ensureAudio() {
-  if (ac) { if (ac.state === 'suspended' && !userPaused) await ac.resume(); return; }
+  if (ac) { if (wantResume()) await ac.resume().catch(() => {}); return; }
   ac = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+  ac.onstatechange = () => { if (wantResume()) ac.resume().catch(() => {}); };
   master = ac.createGain(); master.gain.value = +$('#vol').value; master.connect(ac.destination);
   bus = ac.createGain();
   bus.channelCount = 2; bus.channelCountMode = 'explicit'; bus.channelInterpretation = 'speakers';
@@ -246,7 +251,17 @@ async function ensureAudio() {
     sp.connect(analL, 0); sp.connect(analR, 1);
   }
   audioReady = true;
-  if (ac.state === 'suspended') await ac.resume();
+  if (ac.state !== 'running') await ac.resume().catch(() => {});
+}
+
+// iOS: a context created before the mic opened stays stuck on the old audio route. Tear it
+// down so the next ensureAudio() builds a fresh one on the play-and-record session.
+async function rebuildAudio() {
+  if (!ac) return;
+  stopCurrent();
+  const old = ac;
+  ac = null; audioReady = false; useWorklet = false; pending = [];
+  await old.close().catch(() => {});
 }
 
 function stopCurrent() {
@@ -426,11 +441,13 @@ $('#micStart').onclick = async () => {
   if (micBlocked) return showHttpsNote();
   try {
     setAudioSession('play-and-record');
-    await ensureAudio(); stopCurrent();
+    // Open the mic BEFORE touching the AudioContext — on iOS the order matters.
     const id = $('#micSel').value;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: {
       deviceId: id ? { exact: id } : undefined, channelCount: { ideal: 2 },
       echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    if (IOS) await rebuildAudio();
+    await ensureAudio(); stopCurrent();
     const src = ac.createMediaStreamSource(stream); src.connect(bus);
     current = { kind: 'mic', stop: () => { src.disconnect(); stream.getTracks().forEach((t) => t.stop()); } };
     $('#micStart').style.display = 'none'; $('#micStop').style.display = '';
@@ -438,8 +455,20 @@ $('#micStart').onclick = async () => {
     const ch = stream.getAudioTracks()[0].getSettings().channelCount;
     setMode(ch === 2 ? 'xy' : 'phase');
     $('#micNote').className = 'note';
-    $('#micNote').textContent = `正在监听：${stream.getAudioTracks()[0].label || '输入设备'}（${ch || '?'} 声道）`;
+    const label = stream.getAudioTracks()[0].label || '输入设备';
+    $('#micNote').textContent = `正在监听：${label}（${ch || '?'} 声道）`;
     listDevices();
+    // If nothing arrives, say so on screen (with the engine state) instead of failing silently.
+    peak = 0;
+    setTimeout(() => {
+      if (!current || current.kind !== 'mic') return;
+      const track = stream.getAudioTracks()[0];
+      if (peak < 1e-4) {
+        $('#micNote').className = 'note warn';
+        $('#micNote').textContent = `麦克风已打开，但没有收到声音。音频引擎：${ac.state}，${ac.sampleRate} Hz，麦克风：${track.readyState}${track.muted ? '（被系统静音）' : ''}。` +
+          '试试：点「停止」再点「开始监听」；或者完全关掉这个 App / 标签页后重新打开。';
+      }
+    }, 2500);
   } catch (e) {
     $('#micNote').className = 'note warn';
     $('#micNote').innerHTML = '无法打开麦克风：' + e.message + '<br>' + (
@@ -609,7 +638,11 @@ function frame(now) {
   ctx.globalAlpha = 1;
   ctx.fillStyle = `rgba(0,0,0,${1 - S.persist ** (dt * 60)})`; // time-based, so low fps fades the same
   ctx.fillRect(0, 0, W, H);
-  if (!audioReady || ac.state !== 'running') return;
+  if (!audioReady || !ac) return;
+  if (ac.state !== 'running') {
+    if (wantResume() && frames % 30 === 0) ac.resume().catch(() => {}); // keep nudging after an iOS interruption
+    return;
+  }
 
   let chunks = pending; pending = [];
   const keep = Math.ceil((ac.sampleRate * Math.max(dt, 1 / 60) * 1.5) / 512);
