@@ -236,9 +236,11 @@ function setAudioSession(kind) {
 // like "suspended" and keep asking to resume, or the scope silently stops drawing.
 function wantResume() { return ac && ac.state !== 'running' && ac.state !== 'closed' && !userPaused; }
 
-async function ensureAudio() {
+async function ensureAudio(rate) {
   if (ac) { if (wantResume()) await ac.resume().catch(() => {}); return; }
-  ac = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+  const AC = window.AudioContext || window.webkitAudioContext;
+  try { ac = new AC(rate ? { latencyHint: 'interactive', sampleRate: rate } : { latencyHint: 'interactive' }); }
+  catch { ac = new AC({ latencyHint: 'interactive' }); }
   ac.onstatechange = () => { if (wantResume()) ac.resume().catch(() => {}); };
   master = ac.createGain(); master.gain.value = +$('#vol').value; master.connect(ac.destination);
   bus = ac.createGain();
@@ -261,6 +263,18 @@ async function ensureAudio() {
   }
   audioReady = true;
   if (ac.state !== 'running') await ac.resume().catch(() => {});
+}
+
+// Analyser-based capture. Used when the worklet is unavailable, or switched to at runtime if
+// the mic reaches the graph but never shows up in the worklet tap.
+function useAnalyserTap() {
+  if (!useWorklet) return false;
+  const sp = ac.createChannelSplitter(2); bus.connect(sp);
+  analL = ac.createAnalyser(); analR = ac.createAnalyser();
+  analL.fftSize = analR.fftSize = 8192;
+  sp.connect(analL, 0); sp.connect(analR, 1);
+  useWorklet = false;
+  return true;
 }
 
 // iOS: a context created before the mic opened stays stuck on the old audio route. Tear it
@@ -447,6 +461,25 @@ if (matchMedia('(pointer: coarse)').matches) {
   $('#drop').innerHTML = '点击选择音频文件<br><small>mp3 / wav / m4a / flac …</small>';
 }
 
+// Mic → a fresh AudioContext at the mic's own sample rate. Safari delivers pure silence
+// (no error) when a MediaStream feeds a context running at a different rate, e.g. a
+// MacBook mic at 48 kHz into a 44.1 kHz context left over from playing a preset.
+let micSession = 0;
+async function wireMic(stream, rate) {
+  if (current && current.kind === 'mic' && current.stream === stream) { current.detach(); current = null; }
+  await rebuildAudio();
+  await ensureAudio(rate);
+  const src = ac.createMediaStreamSource(stream); src.connect(bus);
+  const probe = ac.createAnalyser(); probe.fftSize = 2048; src.connect(probe); // level straight from the mic
+  const detach = () => { src.disconnect(); probe.disconnect(); };
+  current = { kind: 'mic', stream, detach, stop: () => { detach(); stream.getTracks().forEach((t) => t.stop()); } };
+  return probe;
+}
+function probeLevel(probe) {
+  const buf = new Float32Array(probe.fftSize); probe.getFloatTimeDomainData(buf);
+  let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v)); return m;
+}
+
 $('#micStart').onclick = async () => {
   if (micBlocked) return showHttpsNote();
   try {
@@ -456,30 +489,48 @@ $('#micStart').onclick = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: {
       deviceId: id ? { exact: id } : undefined, channelCount: { ideal: 2 },
       echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    if (IOS) await rebuildAudio();
-    await ensureAudio(); stopCurrent();
-    const src = ac.createMediaStreamSource(stream); src.connect(bus);
+    const track = stream.getAudioTracks()[0], set = track.getSettings();
+    const session = ++micSession;
+    let probe = await wireMic(stream, set.sampleRate);
     $('#autoGain').checked = true;
-    current = { kind: 'mic', stop: () => { src.disconnect(); stream.getTracks().forEach((t) => t.stop()); } };
     $('#micStart').style.display = 'none'; $('#micStop').style.display = '';
     $('#hint').classList.add('gone');
-    const ch = stream.getAudioTracks()[0].getSettings().channelCount;
+    const ch = set.channelCount;
     setMode(ch === 2 ? 'xy' : 'phase');
-    $('#micNote').className = 'note';
-    const label = stream.getAudioTracks()[0].label || '输入设备';
-    $('#micNote').textContent = `正在监听：${label}（${ch || '?'} 声道）`;
+    const label = track.label || '输入设备';
+    const note = (cls, text) => { $('#micNote').className = cls; $('#micNote').textContent = text; };
+    note('note', `正在监听：${label}（${ch || '?'} 声道）`);
     listDevices();
-    // If nothing arrives, say so on screen (with the engine state) instead of failing silently.
+
+    // Self-check: if nothing reaches the scope, find out where it stops and try to fix it.
     peak = 0;
-    setTimeout(() => {
-      if (!current || current.kind !== 'mic') return;
-      const track = stream.getAudioTracks()[0];
-      if (peak < 1e-4) {
-        $('#micNote').className = 'note warn';
-        $('#micNote').textContent = `麦克风已打开，但没有收到声音。音频引擎：${ac.state}，${ac.sampleRate} Hz，麦克风：${track.readyState}${track.muted ? '（被系统静音）' : ''}。` +
-          '试试：点「停止」再点「开始监听」；或者完全关掉这个 App / 标签页后重新打开。';
+    const check = async (attempt) => {
+      if (session !== micSession || !current || current.kind !== 'mic') return;
+      if (peak >= 1e-4) { if (attempt) note('note', `正在监听：${label}（${ch || '?'} 声道，${ac.sampleRate} Hz）`); return; }
+      const src = probeLevel(probe);
+      if (src >= 1e-4 && useAnalyserTap()) {           // mic reaches the graph, the worklet tap misses it
+        note('note', '收到声音了，但采集通道没反应，已自动切换采集方式…');
+        peak = 0; setTimeout(() => check(attempt + 1), 2000); return;
       }
-    }, 2500);
+      if (attempt === 0) {                               // rebuild at the other common rate and retry once
+        const alt = ac.sampleRate === 48000 ? 44100 : 48000;
+        note('note', `没有收到声音，正在换 ${alt} Hz 重试…`);
+        probe = await wireMic(stream, alt);
+        $('#micStart').style.display = 'none'; $('#micStop').style.display = '';   // rebuild reset the buttons
+        peak = 0; setTimeout(() => check(1), 2500); return;
+      }
+      $('#micNote').className = 'note warn';
+      $('#micNote').innerHTML =
+        `麦克风已打开，但收到的全是静音。<br>设备：${label}；麦克风 ${set.sampleRate || '?'} Hz，引擎 ${ac.sampleRate} Hz，` +
+        `${ac.state}；源头电平 ${src.toExponential(1)}；${track.readyState}${track.muted ? '（被系统静音）' : ''}。<br>` +
+        (src < 1e-4
+          ? '浏览器从系统拿到的就是静音，问题在系统这一侧：' +
+            (IOS ? '检查是否有其他 App 正在占用麦克风，或者重启手机。'
+                 : '① 系统设置 → 声音 → 输入：选中内置麦克风，说话时「输入电平」要会跳，「输入音量」不能是 0；' +
+                   '② 在上面的下拉框里换一个输入设备；③ 如果用的是 Safari，换 Chrome 试一次。')
+          : '麦克风有信号，但没能传到示波器。请把这段文字发给我。');
+    };
+    setTimeout(() => check(0), 2500);
   } catch (e) {
     $('#micNote').className = 'note warn';
     $('#micNote').innerHTML = '无法打开麦克风：' + e.message + '<br>' + (
