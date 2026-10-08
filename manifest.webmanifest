@@ -1,0 +1,17 @@
+{
+  "name": "Scope Art 示波器艺术",
+  "short_name": "Scope Art",
+  "description": "左声道 → X，右声道 → Y。用声音画图的示波器。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#090b0a",
+  "theme_color": "#090b0a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

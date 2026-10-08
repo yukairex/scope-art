@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Scope Art</title>
+<meta name="theme-color" content="#090b0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Scope Art">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<style>
+  :root {
+    --bg: #090b0a; --panel: #121513; --panel2: #181c19; --line: #262c28;
+    --text: #d8e2db; --muted: #7d8a81; --accent: #5dff8f; --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 340px; gap: 20px; min-height: 100vh; min-height: 100dvh;
+    padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+             max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
+  @media (max-width: 900px) { .app { grid-template-columns: 1fr; gap: 14px;
+    padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); } }
+  /* Phone-sized, app-like touch behaviour: no tap flash, no double-tap zoom, no text-select on controls */
+  button, .preset, .drop, label.sl { -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none; }
+  @media (max-width: 600px) {
+    header .sub { font-size: 12px; }
+    .preset { padding: 11px 10px; }
+    .tabs button, .modes button { padding: 9px 0; }
+    input[type=range] { height: 28px; }
+  }
+  /* Portrait phone: pin the scope to the top so controls scroll underneath it */
+  @media (max-width: 900px) and (orientation: portrait) {
+    .stage { position: sticky; top: 0; z-index: 5; background: var(--bg);
+      margin: 0 -16px; padding: max(8px, env(safe-area-inset-top)) 16px 10px; }
+    .bezel { width: min(100%, 52dvh); }
+  }
+  header { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; letter-spacing: .04em; }
+  header h1 b { color: var(--accent); font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; }
+
+  .stage { display: flex; align-items: center; justify-content: center; min-width: 0; }
+  .bezel { position: relative; width: min(100%, calc(100vh - 110px), calc(100dvh - 110px)); aspect-ratio: 1; padding: 18px;
+    background: linear-gradient(145deg, #2a2f2c, #141715); border-radius: 22px;
+    box-shadow: 0 20px 60px #000a, inset 0 1px 0 #ffffff14; }
+  @media (max-width: 900px) { .bezel { width: 100%; padding: 10px; border-radius: 16px; } }
+  .screen { position: relative; width: 100%; height: 100%; border-radius: 12px; overflow: hidden;
+    background: radial-gradient(circle at 50% 50%, #0d1510 0%, #050806 75%); box-shadow: inset 0 0 40px #000; }
+  .screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .screen::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 30% 20%, #ffffff0d, transparent 45%),
+                radial-gradient(circle, transparent 60%, #0008 100%); }
+  .hud { position: absolute; left: 12px; bottom: 10px; font: 11px ui-monospace, Menlo, monospace;
+    color: #6f8f78; pointer-events: none; z-index: 2; }
+  .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+    color: #5f7a67; font-size: 15px; z-index: 2; pointer-events: none; padding: 20px; transition: opacity .4s; }
+  .hint.gone { opacity: 0; }
+
+  aside { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--panel2); padding: 4px; border-radius: 9px; margin-bottom: 12px; }
+  .tabs button { all: unset; text-align: center; padding: 7px 0; border-radius: 6px; cursor: pointer; color: var(--muted); }
+  .tabs button.on { background: #24302a; color: var(--text); }
+  .pane { display: none; } .pane.on { display: block; }
+  .presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .preset { all: unset; cursor: pointer; padding: 9px 10px; border-radius: 9px; background: var(--panel2); border: 1px solid transparent; }
+  .preset:hover { border-color: #33403a; }
+  .preset.on { border-color: var(--accent); background: #16231b; }
+  .preset b { display: block; font-weight: 600; }
+  .preset span { display: block; font-size: 11.5px; color: var(--muted); }
+  .btn { all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 14px; border-radius: 8px; background: #1f2a24; border: 1px solid #2f3d35; }
+  .btn:hover { background: #26352d; }
+  .btn.primary { background: #1d3f2a; border-color: #2f6a45; color: #c8ffd8; }
+  .btn.danger { background: #3a1f1f; border-color: #5a2f2f; color: #ffd0d0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: inherit; }
+  .note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+  .note.warn { color: var(--warn); }
+  .note a { color: var(--accent); }
+  .drop { border: 1px dashed #34423a; border-radius: 10px; padding: 18px 10px; text-align: center; color: var(--muted); cursor: pointer; }
+  .drop.over { border-color: var(--accent); color: var(--text); }
+  .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: var(--panel2); padding: 4px; border-radius: 9px; }
+  .modes button { all: unset; text-align: center; padding: 6px 0; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  .modes button.on { background: #24302a; color: var(--text); }
+  label.sl { display: grid; grid-template-columns: 64px 1fr 44px; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
+  label.sl output { text-align: right; color: var(--muted); font: 12px ui-monospace, Menlo, monospace; }
+  label.sl.hide { display: none; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .swatches { display: flex; gap: 8px; margin-top: 12px; }
+  .sw { all: unset; width: 26px; height: 26px; border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px transparent; }
+  .sw.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px #cfd8d2; }
+  .meter { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin-top: 10px; }
+  .meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #2f9b55, var(--accent), #ffd257); transition: width .08s; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>示波器艺术 <b>Scope Art</b></h1>
+    <span class="sub">左声道 → X，右声道 → Y。声音就是画笔。</span>
+  </header>
+
+  <div class="stage">
+    <div class="bezel">
+      <div class="screen" id="screen">
+        <canvas id="grid"></canvas>
+        <canvas id="beam"></canvas>
+        <div class="hint" id="hint">选一个预设、打开麦克风，或者拖一首歌进来</div>
+        <div class="hud" id="hud"></div>
+      </div>
+    </div>
+  </div>
+
+  <aside>
+    <div class="card">
+      <div class="tabs" id="tabs">
+        <button data-tab="presets" class="on">预设</button>
+        <button data-tab="mic">麦克风</button>
+        <button data-tab="file">音频文件</button>
+      </div>
+
+      <div class="pane on" id="pane-presets">
+        <div class="presets" id="presetList"></div>
+        <p class="note">预设是实时合成的「示波器音乐」：你听到的波形正是屏幕上画出的图形。</p>
+      </div>
+
+      <div class="pane" id="pane-mic">
+        <select id="micSel"><option value="">默认输入设备</option></select>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary" id="micStart">🎙 开始监听</button>
+          <button class="btn danger" id="micStop" style="display:none">停止</button>
+        </div>
+        <p class="note" id="micNote">外接声卡 / 立体声输入会直接按 XY 显示；单声道麦克风会自动切到「相位」模式。不会回放到扬声器，不会啸叫。</p>
+      </div>
+
+      <div class="pane" id="pane-file">
+        <div class="drop" id="drop">点击选择或拖入音频文件<br><small>mp3 / wav / flac / ogg …</small></div>
+        <input type="file" id="fileIn" accept="audio/*,.flac,.wav,.mp3,.ogg,.m4a" hidden>
+        <p class="note" id="fileNote">真正的示波器音乐（如 Jerobeam Fenderson 的作品）用 XY 模式；普通歌曲试试「测角仪」或「相位」。</p>
+      </div>
+
+      <div class="meter"><i id="meter"></i></div>
+      <div class="row" style="margin-top:10px; justify-content:space-between">
+        <button class="btn" id="pauseBtn">⏸ 暂停</button>
+        <label class="sl" style="margin:0; flex:1; grid-template-columns: 40px 1fr 36px">
+          <span>音量</span><input type="range" id="vol" min="0" max="1" step="0.01" value="0.35"><output id="volOut"></output>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>显示</h2>
+      <div class="modes" id="modes">
+        <button data-mode="xy" class="on" title="L→X, R→Y">XY</button>
+        <button data-mode="ms" title="L−R → X, L+R → Y">测角仪</button>
+        <button data-mode="phase" title="X = s(t), Y = s(t−d)">相位</button>
+        <button data-mode="yt" title="普通波形">波形</button>
+      </div>
+      <label class="sl hide" id="delayRow"><span>延迟</span><input type="range" id="delay" min="1" max="400" step="1" value="24"><output></output></label>
+      <label class="sl hide" id="tbRow"><span>时基</span><input type="range" id="timebase" min="128" max="8192" step="64" value="1024"><output></output></label>
+      <label class="sl"><span>增益</span><input type="range" id="gain" min="0.2" max="6" step="0.05" value="1"><output></output></label>
+      <label class="sl"><span>亮度</span><input type="range" id="bright" min="0.2" max="4" step="0.05" value="1.2"><output></output></label>
+      <label class="sl"><span>余辉</span><input type="range" id="persist" min="0" max="0.96" step="0.01" value="0.72"><output></output></label>
+      <label class="sl"><span>光束</span><input type="range" id="width" min="0.5" max="5" step="0.1" value="1.6"><output></output></label>
+      <div class="swatches" id="swatches"></div>
+    </div>
+  </aside>
+</div>
+
+<script>
+// ---------- audio graph ----------
+// Every source feeds `bus` (what the scope sees). Presets and files also feed `master`
+// (speakers); the mic never does, so there is no feedback loop.
+const WORKLET = `
+class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.N = 512; this.fresh(); }
+  fresh() { this.l = new Float32Array(this.N); this.r = new Float32Array(this.N); this.i = 0; }
+  process(inputs) {
+    const inp = inputs[0];
+    if (inp && inp.length) {
+      const a = inp[0], b = inp[1] || inp[0];
+      for (let k = 0; k < a.length; k++) {
+        this.l[this.i] = a[k]; this.r[this.i] = b[k];
+        if (++this.i === this.N) { this.port.postMessage({ l: this.l, r: this.r }, [this.l.buffer, this.r.buffer]); this.fresh(); }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('scope-tap', Tap);`;
+
+const $ = (s) => document.querySelector(s);
+const MIC_HTTPS = 'https://100.110.5.32:3018/'; // self-signed: browser warns once, then the mic works
+let ac, master, bus, analL, analR, useWorklet = false, audioReady = false;
+let current = null;           // { kind, stop() }
+let pending = [];             // sample chunks from the tap
+const cache = {};
+
+// iOS: Web Audio follows the ringer switch unless the page's audio session is "playback".
+// Safari 17+ exposes navigator.audioSession; older iOS needs a looping silent <audio> element
+// started from a tap to put the page into the media category.
+const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let silentEl = null;
+function setAudioSession(kind) {
+  if (navigator.audioSession) { try { navigator.audioSession.type = kind; } catch {} return; }
+  if (!IOS || kind !== 'playback' || silentEl) return;
+  const sr = 8000, n = sr / 2, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
+  silentEl = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+  silentEl.loop = true; silentEl.setAttribute('playsinline', '');
+  silentEl.play().catch(() => {});
+}
+
+async function ensureAudio() {
+  if (ac) { if (ac.state === 'suspended' && !userPaused) await ac.resume(); return; }
+  ac = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+  master = ac.createGain(); master.gain.value = +$('#vol').value; master.connect(ac.destination);
+  bus = ac.createGain();
+  bus.channelCount = 2; bus.channelCountMode = 'explicit'; bus.channelInterpretation = 'speakers';
+  if (ac.audioWorklet && window.isSecureContext) {
+    try {
+      await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' })));
+      const tap = new AudioWorkletNode(ac, 'scope-tap', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 2, channelCountMode: 'explicit' });
+      tap.port.onmessage = (e) => { pending.push(e.data); if (pending.length > 48) pending.splice(0, pending.length - 48); };
+      bus.connect(tap);
+      const sink = ac.createGain(); sink.gain.value = 0; tap.connect(sink).connect(ac.destination);
+      useWorklet = true;
+    } catch (e) { console.warn('worklet unavailable, falling back to analysers', e); }
+  }
+  if (!useWorklet) {
+    const sp = ac.createChannelSplitter(2); bus.connect(sp);
+    analL = ac.createAnalyser(); analR = ac.createAnalyser();
+    analL.fftSize = analR.fftSize = 8192;
+    sp.connect(analL, 0); sp.connect(analR, 1);
+  }
+  audioReady = true;
+  if (ac.state === 'suspended') await ac.resume();
+}
+
+function stopCurrent() {
+  ctx.clearRect(0, 0, W, H); lastPt = null;
+  if (current) { try { current.stop(); } catch {} current = null; }
+  document.querySelectorAll('.preset.on').forEach((b) => b.classList.remove('on'));
+  $('#micStart').style.display = ''; $('#micStop').style.display = 'none';
+}
+
+async function playBuffer(buf, kind) {
+  setAudioSession('playback');
+  await ensureAudio(); stopCurrent();
+  const src = ac.createBufferSource(); src.buffer = buf; src.loop = true;
+  src.connect(bus); src.connect(master); src.start();
+  current = { kind, stop: () => { src.stop(); src.disconnect(); } };
+  $('#hint').classList.add('gone');
+}
+
+// ---------- preset synthesis ----------
+// Each preset draws a shape once per cycle of its pitch: the drawing rate IS the note.
+const mtof = (m) => 440 * 2 ** ((m - 69) / 12);
+const TAU = Math.PI * 2;
+const smooth = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+
+function render(seconds, gen) {
+  const sr = ac.sampleRate, n = Math.round(seconds * sr);
+  const buf = ac.createBuffer(2, n, sr);
+  const L = buf.getChannelData(0), R = buf.getChannelData(1), P = [0, 0];
+  for (let i = 0; i < n; i++) { gen(i / sr, 1 / sr, P); L[i] = P[0]; R[i] = P[1]; }
+  const fade = Math.round(sr * 0.01);
+  for (let i = 0; i < fade; i++) { const g = i / fade; L[i] *= g; R[i] *= g; L[n - 1 - i] *= g; R[n - 1 - i] *= g; }
+  return buf;
+}
+function rot3(p, ax, ay, az) {
+  let [x, y, z] = p, c, s;
+  c = Math.cos(ax); s = Math.sin(ax); [y, z] = [y * c - z * s, y * s + z * c];
+  c = Math.cos(ay); s = Math.sin(ay); [x, z] = [x * c + z * s, -x * s + z * c];
+  c = Math.cos(az); s = Math.sin(az); [x, y] = [x * c - y * s, x * s + y * c];
+  return [x, y, z];
+}
+// Pitch follower with a few ms of glide so note changes don't click.
+function glider() { let f = 0; return (target, dt) => (f = f ? f + (target - f) * Math.min(1, dt * 400) : target); }
+
+const PRESETS = [
+  {
+    id: 'liss', name: '和弦李萨如', desc: '音程即图形', secs: 24,
+    build() {
+      const ratios = [[2, 3], [3, 4], [4, 5], [1, 2], [3, 5], [5, 6]];
+      const B = 55; let px = 0, py = 0; const gx = glider(), gy = glider();
+      return (t, dt, P) => {
+        const k = Math.floor(t / 4) % ratios.length, local = t % 4;
+        const [a, b] = ratios[k];
+        px += gx(B * a, dt) * dt; py += gy(B * b * 1.0012, dt) * dt;
+        const env = 0.82 * (0.85 + 0.15 * Math.exp(-local * 1.5));
+        P[0] = env * Math.sin(TAU * px); P[1] = env * Math.sin(TAU * py);
+      };
+    },
+  },
+  {
+    id: 'cube', name: '旋转立方体', desc: '贝斯线画框', secs: 16,
+    build() {
+      const V = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]];
+      const W = [0,1,2,3,0,4,5,1,5,6,2,6,7,3,7,4]; // closed walk over all 12 edges
+      const bass = [45,45,57,45, 43,43,55,43, 41,41,53,41, 40,40,52,47];
+      let ph = 0; const g = glider();
+      return (t, dt, P) => {
+        const step = Math.floor(t / 0.25), sp = (t % 0.25) / 0.25;
+        ph = (ph + g(mtof(bass[step % 16]), dt) * dt) % 1;
+        const s = ph * W.length, k = Math.floor(s), f = s - k;
+        const a = V[W[k]], b = V[W[(k + 1) % W.length]];
+        const p = rot3([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f], t * 0.53, t * 0.81, t * 0.21);
+        const size = 1.05 - 0.25 * sp, persp = 3.2 / (p[2] + 4.2);
+        P[0] = p[0] * persp * size * 0.62; P[1] = p[1] * persp * size * 0.62;
+      };
+    },
+  },
+  {
+    id: 'knot', name: '三叶结', desc: '琶音里的拓扑', secs: 16,
+    build() {
+      const arp = [45,48,52,57, 45,48,52,55, 41,45,48,53, 43,47,50,55];
+      let ph = 0; const g = glider();
+      return (t, dt, P) => {
+        const step = Math.floor(t / 0.2), sp = (t % 0.2) / 0.2;
+        ph = (ph + g(mtof(arp[step % 16]), dt) * dt) % 1;
+        const u = ph * TAU;
+        const p = rot3([Math.sin(u) + 2 * Math.sin(2 * u), Math.cos(u) - 2 * Math.cos(2 * u), -Math.sin(3 * u)], t * 0.4, t * 0.7, 0);
+        const persp = 6 / (p[2] + 7), size = 0.27 * (1 - 0.18 * sp);
+        P[0] = p[0] * persp * size; P[1] = p[1] * persp * size;
+      };
+    },
+  },
+  {
+    id: 'rose', name: '玫瑰线', desc: '花瓣在变形', secs: 24,
+    build() {
+      const ks = [3, 2.5, 4, 5, 1.5, 6], notes = [45, 41, 48, 43, 45, 40];
+      let ph = 0; const g = glider();
+      return (t, dt, P) => {
+        const seg = Math.floor(t / 4) % 6, local = t % 4;
+        const k = ks[seg] + (ks[(seg + 1) % 6] - ks[seg]) * smooth((local - 2.8) / 1.2);
+        ph = (ph + g(mtof(notes[seg]), dt) * dt) % 1;
+        const th = ph * 2 * TAU, r = Math.cos(k * th) * 0.86, a = th + t * 0.25;
+        P[0] = r * Math.cos(a); P[1] = r * Math.sin(a);
+      };
+    },
+  },
+  {
+    id: 'spiro', name: '万花尺', desc: '内摆线呼吸', secs: 20,
+    build() {
+      const pairs = [[5, 3], [7, 2], [8, 3], [9, 4], [6, 1]], notes = [38, 41, 45, 43, 36];
+      let ph = 0; const g = glider();
+      return (t, dt, P) => {
+        const seg = Math.floor(t / 4) % 5;
+        const [Rr, r] = pairs[seg];
+        ph = (ph + g(mtof(notes[seg]), dt) * dt) % 1;
+        const u = ph * TAU * r, d = r * (1 + 0.6 * Math.sin(t * 0.9)), q = (Rr - r) / r;
+        const x = (Rr - r) * Math.cos(u) + d * Math.cos(q * u), y = (Rr - r) * Math.sin(u) - d * Math.sin(q * u);
+        const s = 0.85 / (Rr - r + d), a = t * 0.15;
+        P[0] = s * (x * Math.cos(a) - y * Math.sin(a)); P[1] = s * (x * Math.sin(a) + y * Math.cos(a));
+      };
+    },
+  },
+  {
+    id: 'harmo', name: '谐振图', desc: '敲钟般衰减', secs: 24,
+    build() {
+      const R = [[1,1],[2,3],[3,4],[1,2],[4,5],[3,5],[2,3],[5,6]];
+      const base = [110, 98, 110, 130.81, 87.31, 110, 98, 82.41];
+      const voice = (k, tau) => {
+        if (tau < 0) return [0, 0];
+        const [a, b] = R[k % 8], f = base[k % 8];
+        const env = Math.min(1, tau / 0.004) * Math.exp(-tau * 0.75), e2 = env * Math.exp(-tau * 1.2);
+        return [env * Math.sin(TAU * f * a * tau + 0.3) + 0.3 * e2 * Math.sin(TAU * f * a * 2.003 * tau),
+                env * Math.sin(TAU * f * b * 1.0018 * tau) + 0.3 * e2 * Math.cos(TAU * f * b * 1.997 * tau)];
+      };
+      return (t, dt, P) => {
+        const k = Math.floor(t / 3), tau = t - k * 3;
+        const a = voice(k, tau), b = k > 0 ? voice(k - 1, tau + 3) : [0, 0];
+        P[0] = 0.66 * (a[0] + b[0]); P[1] = 0.66 * (a[1] + b[1]);
+      };
+    },
+  },
+];
+
+const list = $('#presetList');
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.className = 'preset'; b.innerHTML = `<b>${p.name}</b><span>${p.desc}</span>`;
+  b.onclick = async () => {
+    await ensureAudio();
+    cache[p.id] ||= render(p.secs, p.build());
+    await playBuffer(cache[p.id], 'preset');
+    b.classList.add('on'); setMode('xy');
+  };
+  list.appendChild(b);
+}
+
+// ---------- mic ----------
+async function listDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  const sel = $('#micSel'), keep = sel.value;
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+  sel.innerHTML = '<option value="">默认输入设备</option>' +
+    devs.map((d, i) => `<option value="${d.deviceId}">${d.label || '输入设备 ' + (i + 1)}</option>`).join('');
+  sel.value = keep;
+}
+const micBlocked = !window.isSecureContext || !navigator.mediaDevices?.getUserMedia;
+function showHttpsNote() {
+  $('#micNote').className = 'note warn';
+  $('#micNote').innerHTML = `浏览器只允许 HTTPS 页面使用麦克风。请改用 <a href="${MIC_HTTPS}">${MIC_HTTPS}</a>（自签名证书，浏览器提示时选「高级 → 继续访问」）`;
+}
+if (micBlocked) showHttpsNote(); else listDevices();
+if (matchMedia('(pointer: coarse)').matches) {
+  $('#hint').textContent = '选一个预设、打开麦克风，或者选一首歌';
+  $('#drop').innerHTML = '点击选择音频文件<br><small>mp3 / wav / m4a / flac …</small>';
+}
+
+$('#micStart').onclick = async () => {
+  if (micBlocked) return showHttpsNote();
+  try {
+    setAudioSession('play-and-record');
+    await ensureAudio(); stopCurrent();
+    const id = $('#micSel').value;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      deviceId: id ? { exact: id } : undefined, channelCount: { ideal: 2 },
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const src = ac.createMediaStreamSource(stream); src.connect(bus);
+    current = { kind: 'mic', stop: () => { src.disconnect(); stream.getTracks().forEach((t) => t.stop()); } };
+    $('#micStart').style.display = 'none'; $('#micStop').style.display = '';
+    $('#hint').classList.add('gone');
+    const ch = stream.getAudioTracks()[0].getSettings().channelCount;
+    setMode(ch === 2 ? 'xy' : 'phase');
+    $('#micNote').className = 'note';
+    $('#micNote').textContent = `正在监听：${stream.getAudioTracks()[0].label || '输入设备'}（${ch || '?'} 声道）`;
+    listDevices();
+  } catch (e) {
+    $('#micNote').className = 'note warn';
+    $('#micNote').innerHTML = '无法打开麦克风：' + e.message + '<br>' + (
+      /system/i.test(e.message) ? '这是操作系统拦截的。Mac：系统设置 → 隐私与安全性 → 麦克风 → 打开浏览器的开关，然后重启浏览器。'
+      : e.name === 'NotAllowedError' ? (IOS ? 'iPhone：设置 → Safari → 麦克风 → 允许（主屏幕 App 同样适用），然后重新打开。'
+                                            : '请在地址栏左侧的网站设置里允许麦克风。')
+      : e.name === 'NotFoundError' ? '没有找到输入设备。Mac mini 没有内置麦克风，需要外接。' : '');
+  }
+};
+$('#micStop').onclick = stopCurrent;
+
+// ---------- files ----------
+async function loadFile(file) {
+  if (!file) return;
+  await ensureAudio();
+  $('#fileNote').textContent = '解码中… ' + file.name;
+  try {
+    const buf = await ac.decodeAudioData(await file.arrayBuffer());
+    await playBuffer(buf, 'file');
+    $('#fileNote').textContent = `▶ ${file.name}  ·  ${buf.numberOfChannels} 声道  ·  ${Math.round(buf.duration)} 秒（循环）`;
+    if (buf.numberOfChannels < 2) setMode('phase');
+  } catch (e) { $('#fileNote').textContent = '无法解码这个文件：' + e.message; }
+}
+const drop = $('#drop');
+drop.onclick = () => $('#fileIn').click();
+$('#fileIn').onchange = (e) => loadFile(e.target.files[0]);
+['dragenter', 'dragover'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+document.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) { showTab('file'); loadFile(f); } });
+
+// ---------- controls ----------
+function showTab(name) {
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('on', p.id === 'pane-' + name));
+}
+$('#tabs').onclick = (e) => e.target.dataset.tab && showTab(e.target.dataset.tab);
+
+let mode = 'xy';
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('#modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+  $('#delayRow').classList.toggle('hide', m !== 'phase');
+  $('#tbRow').classList.toggle('hide', m !== 'yt');
+  lastPt = null;
+}
+$('#modes').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mode);
+
+const S = {};
+const fmt = { delay: (v) => v, timebase: (v) => v, gain: (v) => (+v).toFixed(1) + '×', bright: (v) => (+v).toFixed(1),
+  persist: (v) => Math.round(v * 100) + '%', width: (v) => (+v).toFixed(1), vol: (v) => Math.round(v * 100) };
+for (const id of Object.keys(fmt)) {
+  const el = $('#' + id), out = id === 'vol' ? $('#volOut') : el.nextElementSibling;
+  const upd = () => { S[id] = +el.value; out.textContent = fmt[id](el.value); if (id === 'vol' && master) master.gain.setTargetAtTime(S.vol, ac.currentTime, 0.02); };
+  el.oninput = upd; upd();
+}
+
+let userPaused = false;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && ac && ac.state !== 'running' && !userPaused) ac.resume().catch(() => {});
+});
+$('#pauseBtn').onclick = async () => {
+  if (!ac) return;
+  userPaused = !userPaused;
+  if (userPaused) await ac.suspend(); else await ac.resume();
+  $('#pauseBtn').textContent = userPaused ? '▶ 继续' : '⏸ 暂停';
+};
+
+const COLORS = [[90, 255, 140], [255, 176, 60], [90, 200, 255], [255, 110, 200], [235, 240, 255]];
+let color = COLORS[0];
+COLORS.forEach((c, i) => {
+  const b = document.createElement('button'); b.className = 'sw' + (i ? '' : ' on');
+  b.style.background = `rgb(${c})`;
+  b.onclick = () => { color = c; document.querySelectorAll('.sw').forEach((s) => s.classList.toggle('on', s === b)); drawGrid(); };
+  $('#swatches').appendChild(b);
+});
+
+// ---------- rendering ----------
+const gridC = $('#grid'), beamC = $('#beam'), g = gridC.getContext('2d'), ctx = beamC.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const r = $('#screen').getBoundingClientRect();
+  W = Math.round(r.width * DPR); H = Math.round(r.height * DPR);
+  for (const c of [gridC, beamC]) { c.width = W; c.height = H; }
+  drawGrid(); lastPt = null;
+}
+function drawGrid() {
+  g.clearRect(0, 0, W, H);
+  const n = 8, step = W / n;
+  g.strokeStyle = `rgba(${color},0.10)`; g.lineWidth = DPR;
+  g.beginPath();
+  for (let i = 1; i < n; i++) { g.moveTo(i * step, 0); g.lineTo(i * step, H); g.moveTo(0, i * step); g.lineTo(W, i * step); }
+  g.stroke();
+  g.strokeStyle = `rgba(${color},0.18)`;
+  g.beginPath();
+  for (let i = 1; i < n * 5; i++) {
+    const p = (i * W) / (n * 5), t = 4 * DPR;
+    g.moveTo(p, H / 2 - t); g.lineTo(p, H / 2 + t); g.moveTo(W / 2 - t, p); g.lineTo(W / 2 + t, p);
+  }
+  g.stroke();
+}
+new ResizeObserver(resize).observe($('#screen'));
+
+// Beam brightness ∝ dwell time: slow segments glow, fast jumps barely show.
+const NB = 10;
+let lastPt = null;
+const histMask = 32767, hist = new Float32Array(histMask + 1); let hi = 0;
+
+function strokeBuckets(paths) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = `rgb(${color})`;
+  const w = S.width * DPR;
+  for (let b = 0; b < NB; b++) {
+    if (!paths[b]) continue;
+    const a = (b + 0.5) / NB;
+    ctx.globalAlpha = a * 0.16; ctx.lineWidth = w * 4.5; ctx.stroke(paths[b]);
+    ctx.globalAlpha = a; ctx.lineWidth = w; ctx.stroke(paths[b]);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawXY(xs, ys, n) {
+  const R = W * 0.5, cx = W / 2, cy = H / 2, k = S.bright * 0.012, paths = [];
+  let [px, py] = lastPt || [cx + xs[0] * R, cy - ys[0] * R];
+  for (let i = 0; i < n; i++) {
+    const x = cx + xs[i] * R, y = cy - ys[i] * R;
+    const len = Math.hypot(x - px, y - py) / W;
+    const a = Math.min(1, k / (len + 0.0015));
+    if (a > 0.02) {
+      const b = Math.min(NB - 1, Math.floor(a * NB));
+      const p = (paths[b] ||= new Path2D()); p.moveTo(px, py); p.lineTo(x, y);
+    }
+    px = x; py = y;
+  }
+  lastPt = [px, py];
+  strokeBuckets(paths);
+}
+
+function drawYT() {
+  const N = S.timebase, R = H * 0.5;
+  // trigger: latest rising zero-crossing that still leaves a full window after it
+  let start = (hi - 2 * N) & histMask;
+  for (let j = hi - N - 1; j > hi - 2 * N; j--) {
+    if (hist[(j - 1) & histMask] < 0 && hist[j & histMask] >= 0) { start = j & histMask; break; }
+  }
+  const paths = [new Path2D()], p = paths[0];
+  for (let i = 0; i < N; i++) {
+    const x = (i / (N - 1)) * W, y = H / 2 - hist[(start + i) & histMask] * S.gain * R;
+    i ? p.lineTo(x, y) : p.moveTo(x, y);
+  }
+  const all = []; all[Math.min(NB - 1, Math.round(S.bright * 5))] = p;
+  strokeBuckets(all);
+}
+
+let frames = 0, lastT = performance.now(), fps = 0, xsBuf = new Float32Array(16384), ysBuf = new Float32Array(16384);
+const tmpL = new Float32Array(8192), tmpR = new Float32Array(8192);
+let peak = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  frames++; fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
+
+  // fade the phosphor
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = `rgba(0,0,0,${1 - S.persist ** (dt * 60)})`; // time-based, so low fps fades the same
+  ctx.fillRect(0, 0, W, H);
+  if (!audioReady || ac.state !== 'running') return;
+
+  let chunks = pending; pending = [];
+  const keep = Math.ceil((ac.sampleRate * Math.max(dt, 1 / 60) * 1.5) / 512);
+  if (useWorklet && chunks.length > keep) chunks = chunks.slice(-keep);
+  if (!useWorklet) {
+    const want = Math.min(8192, Math.round(ac.sampleRate * dt));
+    analL.getFloatTimeDomainData(tmpL); analR.getFloatTimeDomainData(tmpR);
+    chunks = [{ l: tmpL.subarray(8192 - want), r: tmpR.subarray(8192 - want) }];
+  }
+  let n = 0, sum = 0;
+  const gain = S.gain, d = S.delay;
+  for (const { l, r } of chunks) {
+    for (let i = 0; i < l.length && n < xsBuf.length; i++) {
+      const L = l[i], Rr = r[i], m = (L + Rr) * 0.5;
+      sum += m * m;
+      hist[hi] = m; hi = (hi + 1) & histMask;
+      if (mode === 'xy') { xsBuf[n] = L * gain; ysBuf[n] = Rr * gain; }
+      else if (mode === 'ms') { xsBuf[n] = (Rr - L) * 0.7071 * gain; ysBuf[n] = (L + Rr) * 0.7071 * gain; }
+      else if (mode === 'phase') { xsBuf[n] = m * gain; ysBuf[n] = hist[(hi - 1 - d) & histMask] * gain; }
+      n++;
+    }
+  }
+  if (n) {
+    const rms = Math.sqrt(sum / n);
+    peak = Math.max(rms, peak * 0.9);
+    if (mode === 'yt') drawYT(); else drawXY(xsBuf, ysBuf, n);
+  } else peak *= 0.9;
+  $('#meter').style.width = Math.min(100, peak * 180) + '%';
+  if (frames % 15 === 0) {
+    $('#hud').textContent = `${(ac.sampleRate / 1000).toFixed(1)} kHz · ${n} 点/帧 · ${fps.toFixed(0)} fps · ${useWorklet ? 'worklet' : 'analyser'} · ${mode.toUpperCase()}`;
+  }
+}
+requestAnimationFrame(frame);
+
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('service worker', e));
+}
+</script>
+</body>
+</html>
